@@ -1,88 +1,101 @@
 package com.example.superhero_localstack.service;
-
-
 import com.amazonaws.services.sqs.AmazonSQS;
 import com.amazonaws.services.sqs.model.Message;
-import com.amazonaws.services.sqs.model.MessageAttributeValue;
 import com.amazonaws.services.sqs.model.ReceiveMessageRequest;
+import com.example.superhero_localstack.DTO.SuperheroMessage;
 import com.example.superhero_localstack.model.Superhero;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.Data;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.cloud.aws.messaging.listener.SqsMessageDeletionPolicy;
+import org.springframework.cloud.aws.messaging.listener.annotation.SqsListener;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.Map;
 
-@Data
 @Service
-@Slf4j
 public class SuperheroMessageConsumer {
+
     private static final String QUEUE_URL = "http://localhost:4566/000000000000/superhero-queue";
 
-    private final AmazonSQS amazonSQS;
-    private final ObjectMapper objectMapper;
-    private final SuperheroService superheroService;
+    @Autowired
+    private AmazonSQS amazonSQS;
 
     @Autowired
-    public SuperheroMessageConsumer(AmazonSQS amazonSQS, ObjectMapper objectMapper, SuperheroService superheroService) {
-        this.amazonSQS = amazonSQS;
-        this.objectMapper = objectMapper;
-        this.superheroService = superheroService;
-        System.out.println("Consumer initialized");
+    private ObjectMapper objectMapper;
 
+    @Autowired
+    private SuperheroService superheroService;
+
+    public void SuperheroMessageListener(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
     }
 
-    @Scheduled(fixedRate = 5000)
-    public void consumeMessages() {
-
+    @SqsListener(value = "${aws.sqs.queue.name}", deletionPolicy = SqsMessageDeletionPolicy.ON_SUCCESS)
+    public void receiveMessages(String message) {
         try {
-            ReceiveMessageRequest receiveRequest = new ReceiveMessageRequest()
-                    .withQueueUrl(QUEUE_URL)
-                    .withMaxNumberOfMessages(10)
-                    .withMessageAttributeNames("All")
-                    .withWaitTimeSeconds(10);
 
-            List<Message> messages = amazonSQS.receiveMessage(receiveRequest).getMessages();
+            SuperheroMessage superheroMessage = objectMapper.readValue(
+                    message,
+                    SuperheroMessage.class
+            );
+            processMessage(superheroMessage);
 
-
-
-            for (Message message : messages) {
-                try {
-                    processMessage(message);
-                    amazonSQS.deleteMessage(QUEUE_URL, message.getReceiptHandle());
-                } catch (Exception e) {
-                    System.err.println("Error processing message: " + e.getMessage());
-                    e.printStackTrace();
-                }
-            }
         } catch (Exception e) {
-            System.err.println("Error in consumer: " + e.getMessage());
-
-            e.printStackTrace();
+            throw new RuntimeException("Error processing message", e);
         }
     }
 
-    private void processMessage(Message message) throws Exception {
-        String messageBody = message.getBody();
 
+    //    @Scheduled(fixedDelay = 30000)
+//    public void receiveMessages() {
+//        ReceiveMessageRequest receiveMessageRequest = new ReceiveMessageRequest()
+//                .withQueueUrl(QUEUE_URL)
+//                .withMaxNumberOfMessages(10)
+//                .withWaitTimeSeconds(20);
+//
+//        List<Message> messages = amazonSQS.receiveMessage(receiveMessageRequest).getMessages();
+//
+//        for (Message message : messages) {
+//            try {
+//                SuperheroMessage superheroMessage = objectMapper.readValue(
+//                        message.getBody(),
+//                        SuperheroMessage.class
+//                );
+//                processMessage(superheroMessage);
+//
+//                amazonSQS.deleteMessage(QUEUE_URL, message.getReceiptHandle());
+//            } catch (Exception e) {
+//                e.printStackTrace();
+//            }
+//        }
+//    }
 
-        Superhero superhero = objectMapper.readValue(messageBody, Superhero.class);
-        Map<String, MessageAttributeValue> messageAttributes = message.getMessageAttributes();
+    private void processMessage(SuperheroMessage message) {
+        switch (message.getOperation()) {
+            case "CREATE":
+                Superhero newHero = new Superhero();
+                newHero.setName(message.getName());
+                newHero.setPower(message.getPower());
+                newHero.setUniverse(message.getUniverse());
+                newHero.setArchEnemy(message.getArchEnemy());
+                superheroService.createSuperhero(newHero);
+                break;
 
-        if (messageAttributes != null &&
-                messageAttributes.containsKey("operation") &&
-                "UPDATE".equals(messageAttributes.get("operation").getStringValue())) {
+            case "UPDATE":
+                Superhero updateHero = new Superhero();
+                updateHero.setName(message.getName());
+                updateHero.setPower(message.getPower());
+                updateHero.setUniverse(message.getUniverse());
+                updateHero.setArchEnemy(message.getArchEnemy());
+                superheroService.updateSuperhero(message.getSuperheroId(), updateHero);
+                break;
 
+            case "DELETE":
+                superheroService.deleteSuperhero(message.getSuperheroId());
+                break;
 
-            superheroService.updateSuperhero(superhero.getId(), superhero);
-
-        } else {
-
-            superheroService.createSuperhero(superhero);
-
+            default:
+                throw new IllegalArgumentException("Unknown operation: " + message.getOperation());
         }
     }
 }
